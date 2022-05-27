@@ -16,3 +16,12 @@ val remotes = listOf(
     Remote("172.20.77.113", Path("/root/ice-test"))
 )
 ```
+
+## 一键编译并发送字节码
+plugin.kts 也实现了自动将当前打开 Java 文件的 Maven 模块编译，并且找到生成的字节码文件，将其复制到测试环境，可用于 Arthas 字节码热更新。
+
+下面是一个使用示例：
+
+![](doc/usage.gif)
+
+> 注意，需要安装 LivePlugin 插件，然后新建一个动态插件，将 plugin.kts 内容复制到此脚本并运行此脚本即可。 之后可从菜单 Tools 下找到注册的命令，修改脚本内容并重新加载以进行自定义配置。
