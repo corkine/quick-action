@@ -1,9 +1,12 @@
 /**
+ * Tool1: Patch Jar
  * 查找 Multi-Maven 工程中结尾为 .yang 或 .java 的可写源文件所在 Maven 模块，对其生成 `mvn clean install`
- * 命令和 `scp remote remote-backup` 备份和 `scp local remote` 替包命令。
- * 相关配置和远程 ICE 列在下方，直接修改即可。
+ * 命令和生成的 Jar 文件执行 `scp remote remote-backup` 备份和 `scp local remote` 替包命令。
+ * Tool2: Patch Class
+ * 查找 Multi-Maven 工程中结尾为 .java 的可写源文件，找到其 Maven 模块，对其生成 `mvn clean install`
+ * 命令，并且对编译后的 class 文件执行 `scp local remote` 上传命令。
  * @author Corkine Ma
- * @since 0.0.1
+ * @since 0.0.2
  * @lastUpdate 2022-5-27
  */
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -16,30 +19,32 @@ import liveplugin.*
 import java.nio.file.Path
 import kotlin.io.path.name
 
-val shortCut = "alt F2"
-val compileFirst = true
-val withRemoteBackup = true
+val shortCutPatch = "alt F2" //替包快捷键
+val shortCutHotPatch = "alt F10" //热更新快捷键
+val compileFirstWhenPatch = true //替包前编译模块
+val compileFirstWhenHotPatch = true //热更新前编译模块
+val withRemoteBackup = true //替包前备份服务器包
 val remotes = listOf(
     Remote("172.20.77.111", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.77.112", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.77.113", kotlin.io.path.Path("/root/ice-test"))
-)
+) //替包和热更新的远程服务器
+val remotesHotPathFolder: Path = Path.of("/root") //热更新的远程目录
+val suffix = listOf(".java", ".yang") //替包过滤的文件类型
 
 registerAction(
-    id = "Patch ICE", keyStroke = shortCut,
+    id = "ICE: Patch Jar", keyStroke = shortCutPatch,
     actionGroupId = "ToolsMenu", positionInGroup = com.intellij.openapi.actionSystem.Constraints.LAST,
 ) { event: AnActionEvent ->
-    val files: List<Path> = FileEditorManager.getInstance(project!!).openFiles.map {
-        Path.of(it.path)
-    }.filter { p -> endsWith(p.name, ".java", ".yang") && p.isFile() && p.isWritable }
+    val files = tabFile(suffix)
     if (files.isEmpty()) {
         showOkCancelDialog("提示", "当前打开的页面中没有可操作的文件, 已中断生成命令。", "确定", "取消")
         return@registerAction
     }
     try {
         val modules = files.mapNotNull { module(find(from = it)) }.toSet().toList()
-        val compileCommands = if (compileFirst) genMaven(modules) else arrayListOf()
-        val scpCommands = modules.map { genScp(it, remotes, copyFirst = withRemoteBackup).joinToString("\n") }
+        val compileCommands = if (compileFirstWhenPatch) genMaven(modules) else arrayListOf()
+        val scpCommands = modules.map { genScpPatch(it, remotes, copyFirst = withRemoteBackup).joinToString("\n") }
         val allCommands = "# ===================== Maven 编译  =====================  \n\n" +
                 compileCommands.joinToString("\n# ----------------\n") + "\n\n" +
                 "#  ===================== SCP 传送  ===================== \n\n" +
@@ -48,6 +53,39 @@ registerAction(
     } catch (e: Exception) {
         showOkCancelDialog("错误", "发生了一些错误：$e", "确定", "取消")
     }
+}
+
+registerAction(
+    id = "ICE: Patch Class", keyStroke = shortCutHotPatch,
+    actionGroupId = "ToolsMenu", positionInGroup = com.intellij.openapi.actionSystem.Constraints.LAST,
+) { event: AnActionEvent ->
+    val files = tabFile(listOf(".java"))
+    if (files.isEmpty()) {
+        showOkCancelDialog("提示", "当前打开的页面中没有可操作的 java 文件, 已中断生成命令。", "确定", "取消")
+        return@registerAction
+    }
+    try {
+        val moduleFilePair = files.mapNotNull {
+            val mayModule = module(find(from = it))
+            if (mayModule == null) null else Pair(mayModule, it)
+        }
+        val modules = moduleFilePair.map { it.first }.toSet().toList()
+        val compileCommands = if (compileFirstWhenHotPatch) genMaven(modules) else arrayListOf()
+        val scpCommands = moduleFilePair.map { genScpHotPatch(it.first, it.second, remotes).joinToString("\n") }
+        val allCommands = "# ===================== Maven 编译  =====================  \n\n" +
+                compileCommands.joinToString("\n# ----------------\n") + "\n\n" +
+                "#  ===================== SCP 传送  ===================== \n\n" +
+                scpCommands.joinToString("\n\n# ----------------\n\n")
+        PluginUtil.showInConsole(allCommands, event.project!!)
+    } catch (e: Exception) {
+        showOkCancelDialog("错误", "发生了一些错误：$e", "确定", "取消")
+    }
+}
+
+fun tabFile(suffix: List<String>): List<Path> {
+    return FileEditorManager.getInstance(project!!).openFiles.map {
+        Path.of(it.path)
+    }.filter { p -> endsWith(p.name, suffix) && p.isFile() && p.isWritable }
 }
 
 data class Module(
@@ -65,7 +103,7 @@ data class Remote(
     val pass: String = "inspur@123",
 )
 
-fun endsWith(path:String, vararg suffix: String) = suffix.any { path.endsWith(it, true) }
+fun endsWith(path: String, suffix: List<String>) = suffix.any { path.endsWith(it, true) }
 
 fun find(level: Int = 15, from: Path?): Path? {
     if (level <= 0 || from == null) return null
@@ -120,6 +158,16 @@ fun jar(module: Module?): Path? {
     else null
 }
 
+fun clazz(module: Module?, file: Path?): Path? {
+    if (module == null || file == null) return null
+    val clazz = module.localPath?.resolve("src/main/java")?.relativize(file)?.let {
+        module.localPath.resolve("target/classes").resolve(it).toString()
+            .replace(".java", ".class")
+    } ?: return null
+    return if (Path.of(clazz).isFile()) Path.of(clazz)
+    else null
+}
+
 fun genMaven(modules: List<Module>): List<String> {
     return modules.map { module ->
         val path = module.localPath
@@ -130,7 +178,7 @@ fun genMaven(modules: List<Module>): List<String> {
     }
 }
 
-fun genScp(module: Module, remotes: List<Remote>, copyFirst: Boolean = false): List<String> {
+fun genScpPatch(module: Module, remotes: List<Remote>, copyFirst: Boolean = false): List<String> {
     val jarPath = jar(module) ?: throw java.lang.RuntimeException(
         "此模块 ${module.artifactId} 不存在编译好的 jar 包在 ${module.localPath}!"
     )
@@ -161,6 +209,19 @@ fun genScp(module: Module, remotes: List<Remote>, copyFirst: Boolean = false): L
         )
     }
     return copy + move
+}
+
+fun genScpHotPatch(module: Module, file: Path, remotes: List<Remote>): List<String> {
+    val classPath = clazz(module, file) ?: throw java.lang.RuntimeException(
+        "此模块 ${module.artifactId} 不存在编译好的 class 文件在 ${module.localPath}!"
+    )
+    val move = remotes.map {
+        String.format(
+            "echo y | pscp -pw %s %s %s@%s:%s",
+            it.pass, classPath.toString(), it.user, it.ip, remotesHotPathFolder.resolve(classPath.name)
+        )
+    }
+    return move
 }
 
 //show(files)

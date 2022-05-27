@@ -69,6 +69,15 @@ val module = Module(
     remotePath = null
 )
 
+module.localPath?.relativize(tP).toString()
+
+module.localPath?.resolve("src/main/java")?.relativize(tP)?.let {
+    module.localPath.resolve("target/classes").resolve(it).toString()
+        .replace(".java", ".class")
+}
+
+Path.of("/root").resolve(Path.of("/hello/world.class").name)
+
 fun jar(module: Module): Path? {
     val jar = module.localPath?.resolve("target/${module.artifactId}-${module.version}.jar")
     return if (jar != null && jar.isFile()) jar
@@ -82,6 +91,8 @@ val remotes = listOf(
 )
 
 jar(module).toString()
+
+
 
 fun genScp(module: Module, remotes: List<Remote>): List<String> {
     val jarPath = jar(module) ?: throw java.lang.RuntimeException(
