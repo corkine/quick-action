@@ -1,12 +1,9 @@
 /**
- * Tool1: Patch Jar
  * 查找 Multi-Maven 工程中结尾为 .yang 或 .java 的可写源文件所在 Maven 模块，对其生成 `mvn clean install`
- * 命令和生成的 Jar 文件执行 `scp remote remote-backup` 备份和 `scp local remote` 替包命令。
- * Tool2: Patch Class
- * 查找 Multi-Maven 工程中结尾为 .java 的可写源文件，找到其 Maven 模块，对其生成 `mvn clean install`
- * 命令，并且对编译后的 class 文件执行 `scp local remote` 上传命令。
+ * 命令和 `scp remote remote-backup` 备份和 `scp local remote` 替包命令。
+ * 相关配置和远程 ICE 列在下方，直接修改即可。
  * @author Corkine Ma
- * @since 0.0.2
+ * @since 0.0.1
  * @lastUpdate 2022-5-27
  */
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -19,18 +16,23 @@ import liveplugin.*
 import java.nio.file.Path
 import kotlin.io.path.name
 
-val shortCutPatch = "alt F2" //替包快捷键
-val shortCutHotPatch = "alt F10" //热更新快捷键
-val compileFirstWhenPatch = true //替包前编译模块
-val compileFirstWhenHotPatch = true //热更新前编译模块
-val withRemoteBackup = true //替包前备份服务器包
+val shortCutPatch = "alt F2"
+val shortCutHotPatch = "alt F10"
+val compileFirstWhenPatch = true
+val compileFirstWhenHotPatch = true
+val withRemoteBackup = true
 val remotes = listOf(
+    Remote("172.20.79.11", kotlin.io.path.Path("/root/ice-test")),
+    Remote("172.20.79.12", kotlin.io.path.Path("/root/ice-test")),
+    Remote("172.20.79.13", kotlin.io.path.Path("/root/ice-test"))
+)
+val remotes2 = listOf(
     Remote("172.20.77.111", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.77.112", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.77.113", kotlin.io.path.Path("/root/ice-test"))
-) //替包和热更新的远程服务器
-val remotesHotPathFolder: Path = Path.of("/root") //热更新的远程目录
-val suffix = listOf(".java", ".yang") //替包过滤的文件类型
+)
+val remotesHotPathFolder: Path = Path.of("/root")
+val suffix = listOf(".java", ".yang")
 
 registerAction(
     id = "ICE: Patch Jar", keyStroke = shortCutPatch,
@@ -48,8 +50,8 @@ registerAction(
         val allCommands = "# ===================== Maven 编译  =====================  \n\n" +
                 compileCommands.joinToString("\n# ----------------\n") + "\n\n" +
                 "#  ===================== SCP 传送  ===================== \n\n" +
-                scpCommands.joinToString("\n\n# ----------------\n\n")
-        PluginUtil.showInConsole(allCommands, event.project!!)
+                scpCommands.joinToString("\n\n# ----------------\n\n" + "\n\n")
+        PluginUtil.showInConsole(unixPath(allCommands), event.project!!)
     } catch (e: Exception) {
         showOkCancelDialog("错误", "发生了一些错误：$e", "确定", "取消")
     }
@@ -75,8 +77,8 @@ registerAction(
         val allCommands = "# ===================== Maven 编译  =====================  \n\n" +
                 compileCommands.joinToString("\n# ----------------\n") + "\n\n" +
                 "#  ===================== SCP 传送  ===================== \n\n" +
-                scpCommands.joinToString("\n\n# ----------------\n\n")
-        PluginUtil.showInConsole(allCommands, event.project!!)
+                scpCommands.joinToString("\n\n# ----------------\n\n") + "\n\n"
+        PluginUtil.showInConsole(unixPath(allCommands), event.project!!)
     } catch (e: Exception) {
         showOkCancelDialog("错误", "发生了一些错误：$e", "确定", "取消")
     }
@@ -149,6 +151,10 @@ fun module(pom: Path?): Module? {
         }
     }
     return null
+}
+
+fun unixPath(input: String):String {
+    return input.replace("\\","/")
 }
 
 fun jar(module: Module?): Path? {
