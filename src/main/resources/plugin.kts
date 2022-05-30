@@ -1,41 +1,84 @@
 /**
- * 查找 Multi-Maven 工程中结尾为 .yang 或 .java 的可写源文件所在 Maven 模块，对其生成 `mvn clean install`
- * 命令和 `scp remote remote-backup` 备份和 `scp local remote` 替包命令。
+ * 1. 查找 Multi-Maven 工程中结尾为 .yang 或 .java 的可写源文件所在 Maven 模块，编译后上传 Jar 包到远程服务器。
+ * 2. 查找 Multi-Maven 工程中结尾为 .java 的可写源文件，找到其 Maven 模块并编译，然后将其字节码上传到远程服务器。
+ * 3. 查找 Multi-Maven 工程中结尾为 .java 的可写源文件，找到其 Maven 模块并生成 `maven clean install` 命令。
+ * 4. 查找 Multi-Maven 工程中结尾为 .java 的可写源文件，找到其 Maven 模块将编译好的 Jar 包收集到本地一目录。
  * 相关配置和远程 ICE 列在下方，直接修改即可。
  * @author Corkine Ma
- * @since 0.0.1
- * @lastUpdate 2022-5-27
+ * @since 0.0.3
+ * @lastUpdate 2022-5-30
  */
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.ui.showOkCancelDialog
-import com.intellij.util.io.isDirectory
-import com.intellij.util.io.isFile
-import com.intellij.util.io.isWritable
+import com.intellij.util.io.*
 import liveplugin.*
+import java.nio.file.CopyOption
 import java.nio.file.Path
 import kotlin.io.path.name
 
-val shortCutPatch = "alt F2"
-val shortCutHotPatch = "alt F10"
-val compileFirstWhenPatch = true
-val compileFirstWhenHotPatch = true
-val withRemoteBackup = true
-val remotes = listOf(
+val r79 = listOf(
     Remote("172.20.79.11", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.79.12", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.79.13", kotlin.io.path.Path("/root/ice-test"))
 )
-val remotes2 = listOf(
+val r77 = listOf(
     Remote("172.20.77.111", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.77.112", kotlin.io.path.Path("/root/ice-test")),
     Remote("172.20.77.113", kotlin.io.path.Path("/root/ice-test"))
 )
+
+val shortCutPatch = "alt F2"
+val shortCutHotPatch = "alt F10"
+val shortCutGenCompile = "ctrl alt F8"
+val shortCutCollectJar = "ctrl alt F9"
+val compileFirstWhenPatch = true
+val compileFirstWhenHotPatch = true
+val withRemoteBackup = true
+val remotes = r79
 val remotesHotPathFolder: Path = Path.of("/root")
+val localCollectFolder: Path = Path.of("C:/Users/mazhangjing/Desktop/collectJar")
 val suffix = listOf(".java", ".yang")
 
 registerAction(
-    id = "ICE: Patch Jar", keyStroke = shortCutPatch,
+    id = "Gen Maven Compile Command", keyStroke = shortCutGenCompile,
+    actionGroupId = "ToolsMenu", positionInGroup = com.intellij.openapi.actionSystem.Constraints.LAST,
+) { event: AnActionEvent ->
+    val files = tabFile(suffix)
+    if (files.isEmpty()) {
+        showOkCancelDialog("提示", "当前打开的页面中没有可操作的文件, 已中断生成命令。", "确定", "取消")
+        return@registerAction
+    }
+    try {
+        val modules = files.mapNotNull { module(find(from = it)) }.toSet().toList()
+        val allCommands = genMaven(modules).joinToString("\n\n")
+        PluginUtil.showInConsole(unixPath(allCommands), event.project!!)
+    } catch (e: Exception) {
+        showOkCancelDialog("错误", "发生了一些错误：$e", "确定", "取消")
+    }
+}
+
+registerAction(
+    id = "Collect Jar to Folder", keyStroke = shortCutCollectJar,
+    actionGroupId = "ToolsMenu", positionInGroup = com.intellij.openapi.actionSystem.Constraints.LAST,
+) { _: AnActionEvent ->
+    val files = tabFile(suffix)
+    if (files.isEmpty()) {
+        showOkCancelDialog("提示", "当前打开的页面中没有可操作的文件, 已中断生成命令。", "确定", "取消")
+        return@registerAction
+    }
+    try {
+        val modules = files.mapNotNull { module(find(from = it)) }.toSet().toList()
+        modules.forEach { copyJarToCollect(it, localCollectFolder) }
+        showOkCancelDialog("成功", "收集模块 ${modules.joinToString(", ") { it.artifactId }} " +
+                "Jar 包到 $localCollectFolder 完成。", "确定", "取消")
+    } catch (e: Exception) {
+        showOkCancelDialog("错误", "发生了一些错误：$e", "确定", "取消")
+    }
+}
+
+registerAction(
+    id = "Gen Patch Jar Command", keyStroke = shortCutPatch,
     actionGroupId = "ToolsMenu", positionInGroup = com.intellij.openapi.actionSystem.Constraints.LAST,
 ) { event: AnActionEvent ->
     val files = tabFile(suffix)
@@ -58,7 +101,7 @@ registerAction(
 }
 
 registerAction(
-    id = "ICE: Patch Class", keyStroke = shortCutHotPatch,
+    id = "Gen Patch Class Command", keyStroke = shortCutHotPatch,
     actionGroupId = "ToolsMenu", positionInGroup = com.intellij.openapi.actionSystem.Constraints.LAST,
 ) { event: AnActionEvent ->
     val files = tabFile(listOf(".java"))
@@ -182,6 +225,18 @@ fun genMaven(modules: List<Module>): List<String> {
         }
         String.format("cd ${module.localPath}; mvn clean install")
     }
+}
+
+fun copyJarToCollect(module: Module, folder: Path): Module {
+    val jarPath = jar(module) ?: throw java.lang.RuntimeException(
+        "此模块 ${module.artifactId} 不存在编译好的 jar 包在 ${module.localPath}!"
+    )
+    if (folder.exists()) {
+        folder.delete(true)
+    }
+    folder.createDirectories()
+    java.nio.file.Files.copy(jarPath, folder.resolve(jarPath.fileName))
+    return module
 }
 
 fun genScpPatch(module: Module, remotes: List<Remote>, copyFirst: Boolean = false): List<String> {
